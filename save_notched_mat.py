@@ -1,16 +1,14 @@
-﻿"""
-Run from VS Code terminal.
+r"""Create a paper-like line-noise-filtered copy of a faces-houses recording.
 
-Install dependencies once:
-    pip install numpy scipy
+Run from a VS Code terminal:
+    python save_notched_mat.py "<path-to-subject>\ja_faceshouses.mat"
 
-Usage:
-    python save_notched_mat.py "<path-to-subject>\aa_faceshouses.mat"
+The original file is not changed. The output is saved beside it as:
+    ja_faceshouses_notch58_62.mat
 
-This creates a new file next to the original:
-    aa_faceshouses_notch60.mat
-
-The original .mat file is not changed.
+Miller et al. described a third-order Butterworth notch filter from 58 to
+62 Hz. This script applies that band-stop filter in both directions with
+sosfiltfilt to avoid phase shifts in the offline signal.
 """
 
 import argparse
@@ -18,53 +16,86 @@ from pathlib import Path
 
 import numpy as np
 from scipy.io import loadmat, savemat
-from scipy.signal import iirnotch, filtfilt
+from scipy.signal import butter, sosfiltfilt
 
-NOTCH_FREQS = [60, 120, 180, 240]
+
+NOTCH_BAND = (58.0, 62.0)
+FILTER_ORDER = 3
 
 
 def make_output_path(file_path):
     path = Path(file_path)
-    return path.with_name(path.stem + "_notch60" + path.suffix)
+    return path.with_name(path.stem + "_notch58_62" + path.suffix)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Save a notch-filtered copy of *_faceshouses.mat.")
-    parser.add_argument("file_path", help="Path to *_faceshouses.mat")
-    parser.add_argument("--output", default=None, help="Optional output .mat path")
+    parser = argparse.ArgumentParser(
+        description="Save a paper-like 58-62 Hz band-stop copy of *_faceshouses.mat."
+    )
+    parser.add_argument("file_path", help="Path to the original *_faceshouses.mat")
+    parser.add_argument("--output", help="Optional output .mat path")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing output file.",
+    )
     args = parser.parse_args()
 
-    file_path = Path(args.file_path)
-    output_path = Path(args.output) if args.output else make_output_path(file_path)
+    file_path = Path(args.file_path).resolve()
+    if "_notch" in file_path.stem.lower():
+        raise ValueError(
+            "The input filename already appears to be notch-filtered. Use the original "
+            "*_faceshouses.mat file to avoid applying the filter twice."
+        )
+    if not file_path.exists():
+        raise FileNotFoundError(file_path)
+
+    output_path = Path(args.output).resolve() if args.output else make_output_path(file_path)
+    if output_path.exists() and not args.overwrite:
+        print("Notch-filtered file already exists:", output_path)
+        print("Nothing was changed. Use this file with inspect_raw.py.")
+        return
 
     mat = loadmat(file_path, squeeze_me=True)
-    data = np.asarray(mat["data"], dtype=float)  # time x channels
+    data = np.asarray(mat["data"], dtype=float)
     stim = np.asarray(mat["stim"])
     srate = float(mat["srate"])
 
-    filtered = data.copy()
-    used_freqs = []
-    for f0 in NOTCH_FREQS:
-        if f0 < srate / 2:
-            b, a = iirnotch(w0=f0, Q=30, fs=srate)
-            filtered = filtfilt(b, a, filtered, axis=0)
-            used_freqs.append(f0)
+    if NOTCH_BAND[1] >= srate / 2:
+        raise ValueError(
+            f"The 58-62 Hz band is invalid for sampling rate {srate:g} Hz."
+        )
 
-    out = {
-        "data": filtered,
-        "stim": stim,
-        "srate": srate,
-        "notch_freqs": np.asarray(used_freqs, dtype=float),
-        "source_file": str(file_path),
-    }
+    sos = butter(
+        N=FILTER_ORDER,
+        Wn=NOTCH_BAND,
+        btype="bandstop",
+        fs=srate,
+        output="sos",
+    )
+    filtered = sosfiltfilt(sos, data, axis=0)
 
-    savemat(output_path, out)
+    savemat(
+        output_path,
+        {
+            "data": filtered,
+            "stim": stim,
+            "srate": srate,
+            "notch_band": np.asarray(NOTCH_BAND, dtype=float),
+            "filter_order": FILTER_ORDER,
+            "filter_family": "Butterworth",
+            "filter_mode": "zero-phase sosfiltfilt",
+            "source_file": str(file_path),
+        },
+    )
 
     print("Source:", file_path)
     print("Saved:", output_path)
     print("Data shape:", filtered.shape, "(time x channels)")
     print("Sampling rate:", srate, "Hz")
-    print("Applied notch frequencies:", used_freqs)
+    print("Filter: third-order Butterworth band-stop")
+    print("Band:", list(NOTCH_BAND), "Hz")
+    print("Application: zero-phase sosfiltfilt")
 
 
 if __name__ == "__main__":
