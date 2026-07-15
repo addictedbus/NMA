@@ -1,7 +1,7 @@
 r"""Interactive raw ECoG viewer with anatomical labels and bad-channel saving.
 
-Run from a VS Code terminal:
-    python inspect_raw.py "<path-to-subject>\ja_faceshouses_notch60.mat"
+Run from a VS Code terminal after creating the paper-like filtered file:
+    python inspect_raw.py "<path-to-subject>\ja_faceshouses_notch58_62.mat"
 
 The script automatically looks for:
     <faces_basic_root>\locs\ja_xslocs.mat
@@ -89,7 +89,14 @@ def load_data_and_localisation(data_path, loc_path):
     if stim.shape[0] != data.shape[1]:
         raise ValueError("Stimulus vector length does not match raw time points.")
 
-    return data, stim, srate, elcode, locs
+    notch_band = None
+    if "notch_band" in raw_mat:
+        notch_band = np.atleast_1d(raw_mat["notch_band"]).astype(float)
+    filter_order = None
+    if "filter_order" in raw_mat:
+        filter_order = int(np.asarray(raw_mat["filter_order"]).squeeze())
+
+    return data, stim, srate, elcode, locs, notch_band, filter_order
 
 
 def estimate_display_scale(data, srate):
@@ -109,7 +116,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Interactive ECoG viewer with anatomy and ROI labels."
     )
-    parser.add_argument("file_path", help="Path to *_faceshouses.mat or *_notch60.mat")
+    parser.add_argument(
+        "file_path",
+        help="Path to the paper-like *_notch58_62.mat file",
+    )
     parser.add_argument("--loc-file", help="Path to matching *_xslocs.mat")
     parser.add_argument("--duration", type=float, default=DEFAULT_DURATION)
     parser.add_argument("--n-channels", type=int, default=DEFAULT_N_CHANNELS)
@@ -124,7 +134,9 @@ def main():
     subject = subject_from_path(file_path)
     loc_path = Path(args.loc_file).resolve() if args.loc_file else default_loc_path(file_path, subject)
 
-    data, stim, srate, elcode, locs = load_data_and_localisation(file_path, loc_path)
+    data, stim, srate, elcode, locs, notch_band, filter_order = load_data_and_localisation(
+        file_path, loc_path
+    )
     n_ch, n_times = data.shape
     total_duration = n_times / srate
 
@@ -150,6 +162,19 @@ def main():
     print("Data shape:", data.shape, "(channels x time)")
     print("Sampling rate:", srate, "Hz")
     print("Verified mapping: E1 = data[:, 0] = ElectrodeIndex 1")
+    paper_like_filter = (
+        notch_band is not None
+        and notch_band.shape == (2,)
+        and np.allclose(notch_band, [58.0, 62.0])
+        and filter_order == 3
+    )
+    if paper_like_filter:
+        filter_label = "Butterworth order 3, 58-62 Hz"
+        print("Verified display input filter:", filter_label)
+    else:
+        filter_label = "unverified"
+        print("WARNING: this is not a verified 58-62 Hz, order-3 filtered file.")
+        print("Create it from the original recording with save_notched_mat.py.")
     print("Automatic display scale:", f"{auto_scale:.6g}")
     print("Initial display scale:", f"{scale0:.6g}")
     print("Existing bad channels:", ", ".join(sorted(bad_channels)) or "none")
@@ -217,7 +242,7 @@ def main():
         ax.set_xlabel("Time (s)")
         ax.set_title(
             f"Subject {subject} | click trace/label to toggle bad | "
-            f"bads={len(bad_channels)} | scale={state['scale']:.3g}"
+            f"bads={len(bad_channels)} | scale={state['scale']:.3g} | filter={filter_label}"
         )
         ax.grid(True, axis="x", alpha=0.25)
         if len(times):
